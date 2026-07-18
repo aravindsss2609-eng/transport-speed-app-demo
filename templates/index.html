@@ -271,25 +271,18 @@
                 document.getElementById('speedValue').innerText = data.speed.toFixed(1);
                 document.getElementById('modeValue').innerText = data.predicted_mode;
 
-                // --- MINUTE-BY-MINUTE REAL-TIME TIMELINE ROLLING RESOLVER ---
+                // --- REAL-TIME GRAPH TICK RESOLVER ---
                 const now = new Date();
-                const currentMinute = now.getMinutes();
                 const timeLabel = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-                // Update timeline for continuous visual data tracking
-                if (currentMinute !== lastChartUpdateMinute || realtimeChart.data.labels.length === 0) {
-                    lastChartUpdateMinute = currentMinute;
-                    realtimeChart.data.labels.push(timeLabel);
-                    realtimeChart.data.datasets[0].data.push(data.speed);
-                    
-                    // Maintain a visual clean window of the last 20 logged timeline slots
-                    if (realtimeChart.data.labels.length > 20) {
-                        realtimeChart.data.labels.shift();
-                        realtimeChart.data.datasets[0].data.shift();
-                    }
-                } else {
-                    // Update the latest timeline slot sequentially in sub-minute resolutions
-                    realtimeChart.data.datasets[0].data[realtimeChart.data.datasets[0].data.length - 1] = data.speed;
+                // Push data to timeline slots dynamically per execution interval
+                realtimeChart.data.labels.push(timeLabel);
+                realtimeChart.data.datasets[0].data.push(data.speed);
+                
+                // Maintain a clean visual sliding window of the last 20 telemetry ticks
+                if (realtimeChart.data.labels.length > 20) {
+                    realtimeChart.data.labels.shift();
+                    realtimeChart.data.datasets[0].data.shift();
                 }
                 realtimeChart.update('none');
             });
@@ -300,7 +293,7 @@
                 { 
                     enableHighAccuracy: true, 
                     maximumAge: 0,            
-                    timeout: 1500             
+                    timeout: 2000             
                 }
             );
 
@@ -324,7 +317,6 @@
             document.getElementById('modeValue').innerText = "Awaiting Stream";
         }
     }
-
     function streamPosition(pos) {
         if (!isStreaming) return;
 

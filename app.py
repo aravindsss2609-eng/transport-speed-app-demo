@@ -91,10 +91,13 @@ def process_telemetry_stream(payload):
     state = device_registry[session_id]
     if not state.get('active', False):
         return
-    
+    # Locate tracking ingress handler in app.py and replace time metrics with this
     lat = float(payload.get('lat', 0.0))
     lng = float(payload.get('lng', 0.0))
-    ts = float(payload.get('timestamp', time.time() * 1000.0)) / 1000.0  
+    
+    # Secure device clock properties: fall back to server execution time if hardware payload breaks
+    raw_ts = payload.get('timestamp')
+    ts = float(raw_ts) / 1000.0 if raw_ts else time.time()
     current_time = time.time()
     
     calculated_speed_kmh = 0.0
