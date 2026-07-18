@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NexusStream // Keyless Telematics Engine</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0f1d;
+            --bg-surface: rgba(20, 28, 47, 0.7);
+            --accent-cyan: #00f3ff;
+            --accent-magenta: #ff0055;
+            --text-main: #f0f4f8;
+        }
+
+        body {
+            font-family: 'Rajdhani', sans-serif;
+            background: linear-gradient(135deg, #05070f 0%, #0c1428 100%);
+            color: var(--text-main);
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 20px;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        @media (max-width: 1024px) {
+            .dashboard-grid { grid-template-columns: 1fr; }
+        }
+
+        .panel {
+            background: var(--bg-surface);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(0, 243, 255, 0.15);
+            border-radius: 16px;
+            padding: 25px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+        }
+
+        h2 {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 1.2rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-top: 0;
+            color: var(--accent-cyan);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding-bottom: 10px;
+        }
+
+        .speedometer-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 30px 0;
+        }
+
+        .speed-display {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 5.5rem;
+            font-weight: 700;
+            color: var(--accent-cyan);
+            text-shadow: 0 0 20px rgba(0, 243, 255, 0.6);
+            line-height: 1;
+        }
+
+        .unit { font-size: 1.5rem; color: #a0aec0; font-family: 'Orbitron', sans-serif; margin-top: 5px;}
+
+        .btn-stream {
+            width: 100%;
+            background: transparent;
+            border: 2px solid var(--accent-cyan);
+            color: var(--accent-cyan);
+            padding: 14px;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 1rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-stream.active {
+            border-color: var(--accent-magenta);
+            color: var(--accent-magenta);
+            box-shadow: 0 0 15px rgba(255, 0, 85, 0.4);
+        }
+
+        .btn-stream:hover {
+            background: rgba(0, 243, 255, 0.1);
+            transform: translateY(-2px);
+        }
+
+        #map {
+            height: 450px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .telemetry-metrics {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .metric-card {
+            background: rgba(255, 255, 255, 0.03);
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 3px solid var(--accent-cyan);
+        }
+
+        .metric-label { font-size: 0.85rem; color: #718096; text-transform: uppercase; }
+        .metric-value { font-size: 1.4rem; font-weight: bold; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+<div class="dashboard-grid">
+    <div class="panel">
+        <h2>System Telemetrics</h2>
+        <div class="speedometer-container">
+            <div class="speed-display" id="speedValue">00.0</div>
+            <div class="unit">KM / H</div>
+        </div>
+        
+        <button class="btn-stream" id="toggleBtn" onclick="toggleTelemetryStream()">START CALCULATING</button>
+        
+        <div class="telemetry-metrics">
+            <div class="metric-card">
+                <div class="metric-label">Odometer</div>
+                <div class="metric-value" id="distanceValue" style="color: var(--accent-cyan);">0.000 km</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Acceleration</div>
+                <div class="metric-value" id="accelValue">0.00 m/s²</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">G-Force Load</div>
+                <div class="metric-value" id="gForceValue">0.00 G</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Lat / Lng</div>
+                <div class="metric-value" id="geoCoords" style="font-size:1.1rem;">0.0000, 0.0000</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>Geospatial Processing Grid</h2>
+        <div id="map"></div>
+        <div style="margin-top: 20px;">
+            <canvas id="realtimeChart" height="100"></canvas>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<script>
+    let socket;
+    let watchId = null;
+    let isStreaming = false;
+    let map, pathPolyline, vehicleMarker;
+    let realtimeChart;
+    let sampleCounter = 0;
+
+    function initMap() {
+        map = L.map('map', { zoomControl: false }).setView([0, 0], 2);
+        
+        // COMPLETELY KEYLESS OPENSTREETMAP LAYER
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+        
+        pathPolyline = L.polyline([], {color: '#00f3ff', weight: 4, opacity: 0.8}).addTo(map);
+        
+        vehicleMarker = L.circleMarker([0, 0], {
+            color: '#ff0055',
+            fillColor: '#ff0055',
+            fillOpacity: 0.9,
+            radius: 9,
+            weight: 3
+        }).addTo(map);
+
+        // Native HTML5 Tracking hook to immediately center the map on your exact GPS location
+        if ("geolocation" in navigator) {
+            navigator.geolocation.getCurrentPosition(pos => {
+                const lat = pos.coords.latitude;
+                const lng = pos.coords.longitude;
+                map.setView([lat, lng], 16);
+                vehicleMarker.setLatLng([lat, lng]);
+                document.getElementById('geoCoords').innerText = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+            }, err => console.log("Awaiting device tracking alignment..."));
+        }
+    }
+
+    function initChart() {
+        const ctx = document.getElementById('realtimeChart').getContext('2d');
+        realtimeChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Velocity Timeline',
+                    data: [],
+                    borderColor: '#00f3ff',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    fill: true,
+                    backgroundColor: 'rgba(0, 243, 255, 0.05)',
+                    tension: 0.4
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { display: false },
+                    y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#718096' } }
+                }
+            }
+        });
+    }
+
+    function toggleTelemetryStream() {
+        const btn = document.getElementById('toggleBtn');
+        if (!isStreaming) {
+            socket = io.connect(window.location.origin);
+            socket.emit('start_calculation');
+
+            socket.on('telemetry_processed', (data) => {
+                document.getElementById('accelValue').innerText = data.acceleration.toFixed(2) + " m/s²";
+                document.getElementById('gForceValue').innerText = data.g_force.toFixed(2) + " G";
+                document.getElementById('distanceValue').innerText = data.distance_travelled_km.toFixed(3) + " km";
+                document.getElementById('speedValue').innerText = data.speed.toFixed(1);
+
+                realtimeChart.data.labels.push(sampleCounter++);
+                realtimeChart.data.datasets[0].data.push(data.speed);
+                if(realtimeChart.data.labels.length > 30) {
+                    realtimeChart.data.labels.shift();
+                    realtimeChart.data.datasets[0].data.shift();
+                }
+                realtimeChart.update('none');
+            });
+
+            watchId = navigator.geolocation.watchPosition(
+                streamPosition, 
+                err => console.error(err),
+                { enableHighAccuracy: true, maximumAge: 0, timeout: 4000 }
+            );
+
+            btn.innerText = "STOP CALCULATING";
+            btn.classList.add('active');
+            isStreaming = true;
+        } else {
+            if (watchId) navigator.geolocation.clearWatch(watchId);
+            socket.emit('stop_calculation');
+            socket.disconnect();
+            
+            btn.innerText = "START CALCULATING";
+            btn.classList.remove('active');
+            isStreaming = false;
+            
+            document.getElementById('speedValue').innerText = "00.0";
+            document.getElementById('accelValue').innerText = "0.00 m/s²";
+            document.getElementById('gForceValue').innerText = "0.00 G";
+        }
+    }
+
+    function streamPosition(pos) {
+        if (!isStreaming) return;
+
+        const lat = pos.coords.latitude;
+        const lng = pos.coords.longitude;
+        let speedKmh = (pos.coords.speed && pos.coords.speed >= 0) ? (pos.coords.speed * 3.6) : 0;
+
+        document.getElementById('geoCoords').innerText = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+
+        const currentLoc = [lat, lng];
+        map.panTo(currentLoc);
+        vehicleMarker.setLatLng(currentLoc);
+        pathPolyline.addLatLng(currentLoc);
+
+        if (socket && socket.connected) {
+            socket.emit('telemetry_ingress', {
+                speed: speedKmh,
+                lat: lat,
+                lng: lng,
+                timestamp: pos.timestamp
+            });
+        }
+    }
+
+    window.onload = () => {
+        initMap();
+        initChart();
+    };
+</script>
+</body>
+</html>
