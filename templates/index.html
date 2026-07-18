@@ -185,11 +185,14 @@
     let isStreaming = false;
     let map, pathPolyline, vehicleMarker;
     let realtimeChart;
-    let lastChartUpdateMinute = -1;
+    
+    // Client-side execution backup matrix
+    let lastClientLat = null;
+    let lastClientLng = null;
+    let lastClientTs = null;
 
     function initMap() {
         map = L.map('map', { zoomControl: false }).setView([0, 0], 2);
-        
         L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
             attribution: '© OpenStreetMap contributors'
@@ -209,10 +212,10 @@
             navigator.geolocation.getCurrentPosition(pos => {
                 const lat = pos.coords.latitude;
                 const lng = pos.coords.longitude;
-                map.setView([lat, lng], 16);
+                map.setView([lat, lng], 15);
                 vehicleMarker.setLatLng([lat, lng]);
-                document.getElementById('geoCoords').innerText = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-            }, err => console.log("Awaiting device tracking alignment..."), { enableHighAccuracy: true });
+                document.getElementById('geoCoords').innerText = lat.toFixed(4) + ", " + lng.toFixed(4);
+            }, err => console.log("Awaiting hardware alignment..."), { enableHighAccuracy: true });
         }
     }
 
@@ -228,27 +231,35 @@
                     borderColor: '#00f3ff',
                     borderWidth: 2,
                     pointBackgroundColor: '#ff0055',
-                    pointRadius: 2,
+                    pointRadius: 1,
                     fill: true,
-                    backgroundColor: 'rgba(0, 243, 255, 0.05)',
-                    tension: 0.3
+                    backgroundColor: 'rgba(0, 243, 255, 0.04)',
+                    tension: 0.2
                 }]
             },
             options: {
                 responsive: true,
                 plugins: { legend: { display: false } },
                 scales: {
-                    x: { 
-                        grid: { color: 'rgba(255,255,255,0.03)' },
-                        ticks: { color: '#718096', font: { family: 'Rajdhani' } }
-                    },
-                    y: { 
-                        grid: { color: 'rgba(255,255,255,0.05)' }, 
-                        ticks: { color: '#718096', font: { family: 'Rajdhani' } } 
-                    }
+                    x: { grid: { display: false }, ticks: { color: '#718096', font: { family: 'Rajdhani' } } },
+                    y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#718096', font: { family: 'Rajdhani' } } }
                 }
             }
         });
+    }
+
+    function calculateClientFallbackSpeed(lat1, lon1, lat2, lon2, timeDeltaMs) {
+        if (timeDeltaMs <= 0) return 0;
+        const R = 6371.0;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                  Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        const distanceKm = R * c;
+        const hours = timeDeltaMs / 3600000.0;
+        return (distanceKm / hours) / 3.6; // Convert back to meters/sec for universal payload syncing
     }
 
     function toggleTelemetryStream() {
@@ -271,29 +282,28 @@
                 document.getElementById('speedValue').innerText = data.speed.toFixed(1);
                 document.getElementById('modeValue').innerText = data.predicted_mode;
 
-                // --- REAL-TIME GRAPH TICK RESOLVER ---
+                // Live tick graph updater engine
                 const now = new Date();
                 const timeLabel = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
-                // Push data to timeline slots dynamically per execution interval
                 realtimeChart.data.labels.push(timeLabel);
                 realtimeChart.data.datasets[0].data.push(data.speed);
                 
-                // Maintain a clean visual sliding window of the last 20 telemetry ticks
-                if (realtimeChart.data.labels.length > 20) {
+                if (realtimeChart.data.labels.length > 25) {
                     realtimeChart.data.labels.shift();
                     realtimeChart.data.datasets[0].data.shift();
                 }
                 realtimeChart.update('none');
             });
 
+            // Enforce aggressive, zero-delay hardware options for mobile positioning inside public transport
             watchId = navigator.geolocation.watchPosition(
                 streamPosition, 
-                err => console.error("GPS Tracking Interrupted: ", err),
+                err => console.error("GPS Dropped: ", err),
                 { 
                     enableHighAccuracy: true, 
                     maximumAge: 0,            
-                    timeout: 2000             
+                    timeout: 3000             
                 }
             );
 
@@ -311,20 +321,37 @@
             btn.classList.remove('active');
             isStreaming = false;
             
+            lastClientLat = null; lastClientLng = null; lastClientTs = null;
             document.getElementById('speedValue').innerText = "00.0";
             document.getElementById('accelValue').innerText = "0.00 m/s²";
             document.getElementById('gForceValue').innerText = "0.00 G";
             document.getElementById('modeValue').innerText = "Awaiting Stream";
         }
     }
+
     function streamPosition(pos) {
         if (!isStreaming) return;
 
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
-        let rawHardwareSpeed = (pos.coords.speed !== null && pos.coords.speed >= 0) ? pos.coords.speed : null;
+        const ts = pos.timestamp;
+        
+        let targetSpeed = null;
 
-        document.getElementById('geoCoords').innerText = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+        // Process device speed validation logic
+        if (pos.coords.speed !== null && pos.coords.speed >= 0) {
+            targetSpeed = pos.coords.speed;
+        } else if (lastClientLat !== null && lastClientLng !== null && lastClientTs !== null) {
+            // Compute real-time fallback acceleration matrix if browser GPS chip returns hardware null
+            const timeDelta = ts - lastClientTs;
+            targetSpeed = calculateClientFallbackSpeed(lastClientLat, lastClientLng, lat, lng, timeDelta);
+        }
+
+        lastClientLat = lat;
+        lastClientLng = lng;
+        lastClientTs = ts;
+
+        document.getElementById('geoCoords').innerText = lat.toFixed(4) + ", " + lng.toFixed(4);
 
         const currentLoc = [lat, lng];
         map.setView(currentLoc, map.getZoom(), { animate: false });
@@ -333,10 +360,10 @@
 
         if (socket && socket.connected) {
             socket.emit('telemetry_ingress', {
-                speed: rawHardwareSpeed,
+                speed: targetSpeed,
                 lat: lat,
                 lng: lng,
-                timestamp: pos.timestamp
+                timestamp: ts
             });
         }
     }
