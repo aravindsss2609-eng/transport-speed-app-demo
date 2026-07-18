@@ -5,25 +5,11 @@ from flask_socketio import SocketIO, emit
 import numpy as np
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'keyless-telematics-system-2026'
+app.config['SECRET_KEY'] = 'universal-telematics-2026'
 
-# Optimized configuration for real-time tracking streams
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+# Optimized network socket layer for seamless handoffs between mobile towers
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet', websocket_ping_timeout=15, websocket_ping_interval=5)
 device_registry = {}
-
-class TelematicsKalmanFilter:
-    def __init__(self, initial_value=0.0):
-        self.X = initial_value  
-        self.P = 0.5            
-        self.Q = 0.1  # UPGRADED: Increased process variance to respond faster to speed changes         
-        self.R = 0.4  # UPGRADED: Reduced measurement noise penalty to trust calculated values more            
-
-    def update(self, measurement):
-        self.P = self.P + self.Q
-        kalman_gain = self.P / (self.P + self.R)
-        self.X = self.X + kalman_gain * (measurement - self.X)
-        self.P = (1 - kalman_gain) * self.P
-        return self.X
 
 def haversine_distance(lat1, lon1, lat2, lon2):
     R = 6371.0  # Earth's radius in kilometers
@@ -43,7 +29,6 @@ def dashboard():
 def handle_start_calculation():
     session_id = request.sid
     device_registry[session_id] = {
-        'filter': TelematicsKalmanFilter(),
         'last_lat': None,
         'last_lng': None,
         'last_speed': 0.0,
@@ -73,66 +58,64 @@ def process_telemetry_stream(payload):
     if not state.get('active', False):
         return
     
-    raw_speed = payload.get('speed')
     lat = float(payload.get('lat', 0.0))
     lng = float(payload.get('lng', 0.0))
-    
-    # Extract absolute event timestamps cleanly
     ts = float(payload.get('timestamp', time.time() * 1000.0)) / 1000.0  
     current_time = time.time()
     
     calculated_speed_kmh = 0.0
     incremental_dist = 0.0
     
-    # --- CALCULATING MATHEMATICAL BACKUP SPEED ---
     if state['last_lat'] is not None and state['last_lng'] is not None and state['last_ts'] is not None:
+        # Calculate raw physical displacement
         incremental_dist = haversine_distance(state['last_lat'], state['last_lng'], lat, lng)
         time_delta_seconds = ts - state['last_ts']
         
-        # Prevent division by zero errors if payloads fire simultaneously
-        if time_delta_seconds > 0.1: 
+        if time_delta_seconds > 0.05: # High frequency compatibility layer
             time_delta_hours = time_delta_seconds / 3600.0
             calculated_speed_kmh = incremental_dist / time_delta_hours
 
-    # --- UPGRADED: HARDWARE VS MATHEMATICAL RESOLVER ---
-    if raw_speed is not None and float(raw_speed) > 0.0:
-        actual_speed_input = float(raw_speed) * 3.6  # Convert hardware m/s to km/h
-    else:
-        actual_speed_input = calculated_speed_kmh    # Fallback entirely on spatial changes
-
-    # Process the verified speed vector through the Kalman stabilizer
-    filtered_speed = state['filter'].update(actual_speed_input)
+    # --- THE DYNAMIC VELOCITY MULTI-PASS RESOLVER ---
+    # Threshold 1: Noise Filtering (Stops values jumping when standing completely still)
+    if incremental_dist < 0.00003 and calculated_speed_kmh < 0.5:
+        calculated_speed_kmh = 0.0
     
-    # UPGRADED: Lowered speed blocker threshold down to 0.3 km/h to catch slow movements instantly
-    if filtered_speed < 0.3 or incremental_dist < 0.0001:  
-        filtered_speed = 0.0
+    # Threshold 2: Low-Speed Walking / Jogging Mode
+    elif calculated_speed_kmh > 0.5 and calculated_speed_kmh <= 6.0:
+        # Allow raw calculation to pass through directly without filtering dampeners
+        pass
+        
+    # Threshold 3: High-Speed Motorized Transport Mode (Trains, Cars, Metro)
+    elif calculated_speed_kmh > 6.0:
+        # Prevent temporary extreme GPS jumps (e.g. signal bouncing off a skyscraper)
+        if calculated_speed_kmh > 250.0:
+            calculated_speed_kmh = state['last_speed']
 
-    # Calculate real-time physics variables (Acceleration & G-Force)
+    # Physics vectors calculations
     acceleration_mps2 = 0.0
     g_force = 0.0
     
     if state['last_ts'] is not None:
         time_delta = ts - state['last_ts']
-        if time_delta > 0.1:
-            dv = (filtered_speed - state['last_speed']) / 3.6
+        if time_delta > 0.05:
+            dv = (calculated_speed_kmh - state['last_speed']) / 3.6
             acceleration_mps2 = dv / time_delta
             g_force = acceleration_mps2 / 9.80665
 
-    # Update Odometer accumulation metrics live
-    if filtered_speed > 0.0 and incremental_dist > 0.0:
-        if filtered_speed < 250.0: # Filter absolute noise anomalies
-            state['total_distance_km'] += incremental_dist
+    # Update Odometer metrics if actual movement is detected
+    if calculated_speed_kmh > 0.0:
+        state['total_distance_km'] += incremental_dist
 
-    # Save state logs for the next tracking cycle
+    # Save state logs
     state['last_lat'] = lat
     state['last_lng'] = lng
-    state['last_speed'] = filtered_speed
+    state['last_speed'] = calculated_speed_kmh
     state['last_ts'] = ts
 
     active_duration_sec = current_time - state['start_ts']
     
     emit('telemetry_processed', {
-        'speed': round(filtered_speed, 1),
+        'speed': round(calculated_speed_kmh, 1),
         'acceleration': round(acceleration_mps2, 2),
         'g_force': round(g_force, 2),
         'distance_travelled_km': round(state['total_distance_km'], 3),

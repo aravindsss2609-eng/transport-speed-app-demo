@@ -239,8 +239,17 @@
     function toggleTelemetryStream() {
         const btn = document.getElementById('toggleBtn');
         if (!isStreaming) {
-            socket = io.connect(window.location.origin);
-            socket.emit('start_calculation');
+            // UPGRADED: Force native WebSockets completely. Disables slow polling 
+            // that causes disconnect bottlenecks on mobile networks.
+            socket = io.connect(window.location.origin, {
+                transports: ['websocket'],
+                upgrade: false,
+                forceNew: true
+            });
+
+            socket.on('connect', () => {
+                socket.emit('start_calculation');
+            });
 
             socket.on('telemetry_processed', (data) => {
                 document.getElementById('accelValue').innerText = data.acceleration.toFixed(2) + " m/s²";
@@ -257,14 +266,14 @@
                 realtimeChart.update('none');
             });
 
-            // UPGRADED: High frequency engine optimization for fast moving targets
+            // UPGRADED: High frequency tracker. Checks location hardware every 1.5s
             watchId = navigator.geolocation.watchPosition(
                 streamPosition, 
-                err => console.error(err),
+                err => console.error("GPS Error: ", err),
                 { 
-                    enableHighAccuracy: true, // Forces device to use hardware GPS modules instead of Wi-Fi 
-                    maximumAge: 0,            // Prevents device from reading old cached location coordinates
-                    timeout: 3000             // Cuts hanging signals every 3 seconds to keep updating fluidly
+                    enableHighAccuracy: true, 
+                    maximumAge: 0,            
+                    timeout: 1500             
                 }
             );
 
@@ -273,8 +282,10 @@
             isStreaming = true;
         } else {
             if (watchId) navigator.geolocation.clearWatch(watchId);
-            socket.emit('stop_calculation');
-            socket.disconnect();
+            if (socket) {
+                socket.emit('stop_calculation');
+                socket.disconnect();
+            }
             
             btn.innerText = "START CALCULATING";
             btn.classList.remove('active');
@@ -292,20 +303,21 @@
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
         
-        // UPGRADED: If hardware speed is invalid/null, pass null so Python uses mathematical calculations.
-        // Also: Your old code converted to km/h here. Python expects raw m/s! This is fixed now.
+        // Pass absolute raw speed data straight to your dynamic threshold engine in Python
         let rawHardwareSpeed = (pos.coords.speed !== null && pos.coords.speed >= 0) ? pos.coords.speed : null;
 
         document.getElementById('geoCoords').innerText = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
 
         const currentLoc = [lat, lng];
-        map.panTo(currentLoc);
+        
+        // UPGRADED: Replaced laggy map.panTo() with map.setView() to remove mobile canvas blocking
+        map.setView(currentLoc, map.getZoom(), { animate: false });
         vehicleMarker.setLatLng(currentLoc);
         pathPolyline.addLatLng(currentLoc);
 
         if (socket && socket.connected) {
             socket.emit('telemetry_ingress', {
-                speed: rawHardwareSpeed, // Sends cleanly to your upgraded app.py server
+                speed: rawHardwareSpeed,
                 lat: lat,
                 lng: lng,
                 timestamp: pos.timestamp
