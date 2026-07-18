@@ -182,7 +182,6 @@
     function initMap() {
         map = L.map('map', { zoomControl: false }).setView([0, 0], 2);
         
-        // COMPLETELY KEYLESS OPENSTREETMAP LAYER
         L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
             attribution: '© OpenStreetMap contributors'
@@ -198,7 +197,6 @@
             weight: 3
         }).addTo(map);
 
-        // Native HTML5 Tracking hook to immediately center the map on your exact GPS location
         if ("geolocation" in navigator) {
             navigator.geolocation.getCurrentPosition(pos => {
                 const lat = pos.coords.latitude;
@@ -206,7 +204,7 @@
                 map.setView([lat, lng], 16);
                 vehicleMarker.setLatLng([lat, lng]);
                 document.getElementById('geoCoords').innerText = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-            }, err => console.log("Awaiting device tracking alignment..."));
+            }, err => console.log("Awaiting device tracking alignment..."), { enableHighAccuracy: true });
         }
     }
 
@@ -259,10 +257,15 @@
                 realtimeChart.update('none');
             });
 
+            // UPGRADED: High frequency engine optimization for fast moving targets
             watchId = navigator.geolocation.watchPosition(
                 streamPosition, 
                 err => console.error(err),
-                { enableHighAccuracy: true, maximumAge: 0, timeout: 4000 }
+                { 
+                    enableHighAccuracy: true, // Forces device to use hardware GPS modules instead of Wi-Fi 
+                    maximumAge: 0,            // Prevents device from reading old cached location coordinates
+                    timeout: 3000             // Cuts hanging signals every 3 seconds to keep updating fluidly
+                }
             );
 
             btn.innerText = "STOP CALCULATING";
@@ -288,7 +291,10 @@
 
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
-        let speedKmh = (pos.coords.speed && pos.coords.speed >= 0) ? (pos.coords.speed * 3.6) : 0;
+        
+        // UPGRADED: If hardware speed is invalid/null, pass null so Python uses mathematical calculations.
+        // Also: Your old code converted to km/h here. Python expects raw m/s! This is fixed now.
+        let rawHardwareSpeed = (pos.coords.speed !== null && pos.coords.speed >= 0) ? pos.coords.speed : null;
 
         document.getElementById('geoCoords').innerText = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
 
@@ -299,7 +305,7 @@
 
         if (socket && socket.connected) {
             socket.emit('telemetry_ingress', {
-                speed: speedKmh,
+                speed: rawHardwareSpeed, // Sends cleanly to your upgraded app.py server
                 lat: lat,
                 lng: lng,
                 timestamp: pos.timestamp

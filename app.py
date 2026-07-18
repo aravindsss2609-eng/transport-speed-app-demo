@@ -7,15 +7,16 @@ import numpy as np
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'keyless-telematics-system-2026'
 
+# Optimized configuration for real-time tracking streams
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 device_registry = {}
 
 class TelematicsKalmanFilter:
     def __init__(self, initial_value=0.0):
         self.X = initial_value  
-        self.P = 1.0            
-        self.Q = 0.05           
-        self.R = 0.8            
+        self.P = 0.5            
+        self.Q = 0.1  # UPGRADED: Increased process variance to respond faster to speed changes         
+        self.R = 0.4  # UPGRADED: Reduced measurement noise penalty to trust calculated values more            
 
     def update(self, measurement):
         self.P = self.P + self.Q
@@ -75,36 +76,38 @@ def process_telemetry_stream(payload):
     raw_speed = payload.get('speed')
     lat = float(payload.get('lat', 0.0))
     lng = float(payload.get('lng', 0.0))
+    
+    # Extract absolute event timestamps cleanly
     ts = float(payload.get('timestamp', time.time() * 1000.0)) / 1000.0  
-
     current_time = time.time()
     
-    # --- UPGRADE: MATH-BASED BACKUP SPEED FALLBACK ---
     calculated_speed_kmh = 0.0
     incremental_dist = 0.0
     
+    # --- CALCULATING MATHEMATICAL BACKUP SPEED ---
     if state['last_lat'] is not None and state['last_lng'] is not None and state['last_ts'] is not None:
         incremental_dist = haversine_distance(state['last_lat'], state['last_lng'], lat, lng)
-        time_delta_hours = (ts - state['last_ts']) / 3600.0
+        time_delta_seconds = ts - state['last_ts']
         
-        # Calculate speed mathematically if the time delta is sane (> 0.5 seconds)
-        if time_delta_hours > 0.000138: 
+        # Prevent division by zero errors if payloads fire simultaneously
+        if time_delta_seconds > 0.1: 
+            time_delta_hours = time_delta_seconds / 3600.0
             calculated_speed_kmh = incremental_dist / time_delta_hours
 
-    # Enforce hardware speed if available and valid; otherwise use mathematical derivation
+    # --- UPGRADED: HARDWARE VS MATHEMATICAL RESOLVER ---
     if raw_speed is not None and float(raw_speed) > 0.0:
-        actual_speed_input = float(raw_speed) * 3.6  # Convert m/s to km/h if native metric
+        actual_speed_input = float(raw_speed) * 3.6  # Convert hardware m/s to km/h
     else:
-        actual_speed_input = calculated_speed_kmh
+        actual_speed_input = calculated_speed_kmh    # Fallback entirely on spatial changes
 
-    # Pass the optimized speed tracking vector through the Kalman Filter
+    # Process the verified speed vector through the Kalman stabilizer
     filtered_speed = state['filter'].update(actual_speed_input)
     
-    # Filter out static GPS jitter standing still at the station
-    if filtered_speed < 1.5 or (incremental_dist * 1000 < 0.5):  
+    # UPGRADED: Lowered speed blocker threshold down to 0.3 km/h to catch slow movements instantly
+    if filtered_speed < 0.3 or incremental_dist < 0.0001:  
         filtered_speed = 0.0
 
-    # Calculate real-time acceleration and G-force matrix
+    # Calculate real-time physics variables (Acceleration & G-Force)
     acceleration_mps2 = 0.0
     g_force = 0.0
     
@@ -115,13 +118,12 @@ def process_telemetry_stream(payload):
             acceleration_mps2 = dv / time_delta
             g_force = acceleration_mps2 / 9.80665
 
-    # Update Odometer metrics if the vehicle is visibly moving
+    # Update Odometer accumulation metrics live
     if filtered_speed > 0.0 and incremental_dist > 0.0:
-        # Prevent massive anomalies caused by sudden GPS location jumps
-        if filtered_speed < 200.0: 
+        if filtered_speed < 250.0: # Filter absolute noise anomalies
             state['total_distance_km'] += incremental_dist
 
-    # Save state vectors for the next sequence iteration
+    # Save state logs for the next tracking cycle
     state['last_lat'] = lat
     state['last_lng'] = lng
     state['last_speed'] = filtered_speed
