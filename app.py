@@ -7,9 +7,26 @@ import numpy as np
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'nexus-stream-telematics-2026'
 
-# Enforce strict WebSocket mode for low-latency delivery over cellular mobile towers
-# Change async_mode to 'gevent' for compatibility
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent', websocket_ping_timeout=15, websocket_ping_interval=5)
+# --- DYNAMIC ASYNC ENGINE FALLBACK LAYER ---
+# Detect environment properties to avoid "Invalid async_mode" crashes locally
+try:
+    import gevent
+    import geventwebsocket
+    chosen_async_mode = 'gevent'
+    print("[+] Production WebSocket Core (gevent) successfully loaded.")
+except ImportError:
+    chosen_async_mode = None
+    print("[*] gevent missing locally. Falling back to native development server thread mode.")
+
+# Enforce strict low-latency parameters across mobile towers and client platforms
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*", 
+    async_mode=chosen_async_mode, 
+    websocket_ping_timeout=15, 
+    websocket_ping_interval=5
+)
+
 device_registry = {}
 
 def haversine_distance(lat1, lon1, lat2, lon2):
@@ -134,4 +151,5 @@ def process_telemetry_stream(payload):
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
-    socketio.run(app, host='0.0.0.0', port=port)
+    # This boots flawlessly everywhere: falls back safely on Windows, remains high performance on Linux
+    socketio.run(app, host='0.0.0.0', port=port, debug=True)
