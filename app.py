@@ -5,14 +5,15 @@ from flask_socketio import SocketIO, emit
 import numpy as np
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'universal-telematics-2026'
+app.config['SECRET_KEY'] = 'nexus-stream-telematics-2026'
 
-# Optimized network socket layer for seamless handoffs between mobile towers
+# Enforce strict WebSocket mode for low-latency delivery over cellular mobile towers
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet', websocket_ping_timeout=15, websocket_ping_interval=5)
 device_registry = {}
 
 def haversine_distance(lat1, lon1, lat2, lon2):
-    R = 6371.0  # Earth's radius in kilometers
+    """Calculates exact physical displacement across Earth surface in km."""
+    R = 6371.0  
     phi1, phi2 = np.radians(lat1), np.radians(lat2)
     delta_phi = np.radians(lat2 - lat1)
     delta_lambda = np.radians(lon2 - lon1)
@@ -20,6 +21,21 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     a = np.sin(delta_phi/2.0)**2 + np.cos(phi1) * np.cos(phi2) * np.sin(delta_lambda/2.0)**2
     c = 2.0 * np.arctan2(np.sqrt(a), np.sqrt(1-a))
     return R * c
+
+def rule_based_classifier(speed, accel):
+    """Instant physical inference framework for multimodal classification."""
+    abs_accel = abs(accel)
+    if speed < 0.8:
+        return "Stationary"
+    elif speed <= 7.0:
+        return "Walking / Jogging"
+    elif speed <= 25.0:
+        return "Biking / Eco-Mobility"
+    elif speed <= 130.0:
+        # Trains accelerate very smoothly compared to stop-and-go road traffic
+        return "Train" if abs_accel < 0.6 else "Car / Bus"
+    else:
+        return "High-Speed Transit"
 
 @app.route('/')
 def dashboard():
@@ -67,29 +83,17 @@ def process_telemetry_stream(payload):
     incremental_dist = 0.0
     
     if state['last_lat'] is not None and state['last_lng'] is not None and state['last_ts'] is not None:
-        # Calculate raw physical displacement
         incremental_dist = haversine_distance(state['last_lat'], state['last_lng'], lat, lng)
         time_delta_seconds = ts - state['last_ts']
         
-        if time_delta_seconds > 0.05: # High frequency compatibility layer
+        if time_delta_seconds > 0.05:
             time_delta_hours = time_delta_seconds / 3600.0
             calculated_speed_kmh = incremental_dist / time_delta_hours
 
-    # --- THE DYNAMIC VELOCITY MULTI-PASS RESOLVER ---
-    # Threshold 1: Noise Filtering (Stops values jumping when standing completely still)
-    if incremental_dist < 0.00003 and calculated_speed_kmh < 0.5:
+    # Spatial Window Jitter Filter: Kills cellular tower location bounce when standing dead still
+    if incremental_dist < 0.00002 and calculated_speed_kmh < 0.4:
         calculated_speed_kmh = 0.0
-    
-    # Threshold 2: Low-Speed Walking / Jogging Mode
-    elif calculated_speed_kmh > 0.5 and calculated_speed_kmh <= 6.0:
-        # Allow raw calculation to pass through directly without filtering dampeners
-        pass
-        
-    # Threshold 3: High-Speed Motorized Transport Mode (Trains, Cars, Metro)
-    elif calculated_speed_kmh > 6.0:
-        # Prevent temporary extreme GPS jumps (e.g. signal bouncing off a skyscraper)
-        if calculated_speed_kmh > 250.0:
-            calculated_speed_kmh = state['last_speed']
+        incremental_dist = 0.0
 
     # Physics vectors calculations
     acceleration_mps2 = 0.0
@@ -98,15 +102,19 @@ def process_telemetry_stream(payload):
     if state['last_ts'] is not None:
         time_delta = ts - state['last_ts']
         if time_delta > 0.05:
+            # Convert delta speed from km/h back into m/s for kinematic correctness
             dv = (calculated_speed_kmh - state['last_speed']) / 3.6
             acceleration_mps2 = dv / time_delta
             g_force = acceleration_mps2 / 9.80665
 
-    # Update Odometer metrics if actual movement is detected
+    # Odometer processing logic
     if calculated_speed_kmh > 0.0:
         state['total_distance_km'] += incremental_dist
 
-    # Save state logs
+    # Fetch heuristic inference classification based on real-world kinematics
+    mode_prediction = rule_based_classifier(calculated_speed_kmh, acceleration_mps2)
+
+    # Save tracking history state logs
     state['last_lat'] = lat
     state['last_lng'] = lng
     state['last_speed'] = calculated_speed_kmh
@@ -119,7 +127,8 @@ def process_telemetry_stream(payload):
         'acceleration': round(acceleration_mps2, 2),
         'g_force': round(g_force, 2),
         'distance_travelled_km': round(state['total_distance_km'], 3),
-        'duration_seconds': int(active_duration_sec)
+        'duration_seconds': int(active_duration_sec),
+        'predicted_mode': mode_prediction
     })
 
 if __name__ == '__main__':

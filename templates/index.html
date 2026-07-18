@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NexusStream // Keyless Telematics Engine</title>
+    <title>NexusStream // Telematics Engine</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
     <style>
@@ -122,6 +122,10 @@
             border-left: 3px solid var(--accent-cyan);
         }
 
+        .metric-card.highlight {
+            border-left-color: var(--accent-magenta);
+        }
+
         .metric-label { font-size: 0.85rem; color: #718096; text-transform: uppercase; }
         .metric-value { font-size: 1.4rem; font-weight: bold; margin-top: 5px; }
     </style>
@@ -139,6 +143,10 @@
         <button class="btn-stream" id="toggleBtn" onclick="toggleTelemetryStream()">START CALCULATING</button>
         
         <div class="telemetry-metrics">
+            <div class="metric-card highlight">
+                <div class="metric-label">Transport Mode</div>
+                <div class="metric-value" id="modeValue" style="color: var(--accent-magenta);">Awaiting Stream</div>
+            </div>
             <div class="metric-card">
                 <div class="metric-label">Odometer</div>
                 <div class="metric-value" id="distanceValue" style="color: var(--accent-cyan);">0.000 km</div>
@@ -151,7 +159,7 @@
                 <div class="metric-label">G-Force Load</div>
                 <div class="metric-value" id="gForceValue">0.00 G</div>
             </div>
-            <div class="metric-card">
+            <div class="metric-card" style="grid-column: span 2;">
                 <div class="metric-label">Lat / Lng</div>
                 <div class="metric-value" id="geoCoords" style="font-size:1.1rem;">0.0000, 0.0000</div>
             </div>
@@ -162,7 +170,7 @@
         <h2>Geospatial Processing Grid</h2>
         <div id="map"></div>
         <div style="margin-top: 20px;">
-            <canvas id="realtimeChart" height="100"></canvas>
+            <canvas id="realtimeChart" height="120"></canvas>
         </div>
     </div>
 </div>
@@ -177,7 +185,7 @@
     let isStreaming = false;
     let map, pathPolyline, vehicleMarker;
     let realtimeChart;
-    let sampleCounter = 0;
+    let lastChartUpdateMinute = -1;
 
     function initMap() {
         map = L.map('map', { zoomControl: false }).setView([0, 0], 2);
@@ -215,22 +223,29 @@
             data: {
                 labels: [],
                 datasets: [{
-                    label: 'Velocity Timeline',
+                    label: 'Velocity (KM/H)',
                     data: [],
                     borderColor: '#00f3ff',
                     borderWidth: 2,
-                    pointRadius: 0,
+                    pointBackgroundColor: '#ff0055',
+                    pointRadius: 2,
                     fill: true,
                     backgroundColor: 'rgba(0, 243, 255, 0.05)',
-                    tension: 0.4
+                    tension: 0.3
                 }]
             },
             options: {
                 responsive: true,
                 plugins: { legend: { display: false } },
                 scales: {
-                    x: { display: false },
-                    y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#718096' } }
+                    x: { 
+                        grid: { color: 'rgba(255,255,255,0.03)' },
+                        ticks: { color: '#718096', font: { family: 'Rajdhani' } }
+                    },
+                    y: { 
+                        grid: { color: 'rgba(255,255,255,0.05)' }, 
+                        ticks: { color: '#718096', font: { family: 'Rajdhani' } } 
+                    }
                 }
             }
         });
@@ -239,8 +254,6 @@
     function toggleTelemetryStream() {
         const btn = document.getElementById('toggleBtn');
         if (!isStreaming) {
-            // UPGRADED: Force native WebSockets completely. Disables slow polling 
-            // that causes disconnect bottlenecks on mobile networks.
             socket = io.connect(window.location.origin, {
                 transports: ['websocket'],
                 upgrade: false,
@@ -256,20 +269,34 @@
                 document.getElementById('gForceValue').innerText = data.g_force.toFixed(2) + " G";
                 document.getElementById('distanceValue').innerText = data.distance_travelled_km.toFixed(3) + " km";
                 document.getElementById('speedValue').innerText = data.speed.toFixed(1);
+                document.getElementById('modeValue').innerText = data.predicted_mode;
 
-                realtimeChart.data.labels.push(sampleCounter++);
-                realtimeChart.data.datasets[0].data.push(data.speed);
-                if(realtimeChart.data.labels.length > 30) {
-                    realtimeChart.data.labels.shift();
-                    realtimeChart.data.datasets[0].data.shift();
+                // --- MINUTE-BY-MINUTE REAL-TIME TIMELINE ROLLING RESOLVER ---
+                const now = new Date();
+                const currentMinute = now.getMinutes();
+                const timeLabel = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+                // Update timeline for continuous visual data tracking
+                if (currentMinute !== lastChartUpdateMinute || realtimeChart.data.labels.length === 0) {
+                    lastChartUpdateMinute = currentMinute;
+                    realtimeChart.data.labels.push(timeLabel);
+                    realtimeChart.data.datasets[0].data.push(data.speed);
+                    
+                    // Maintain a visual clean window of the last 20 logged timeline slots
+                    if (realtimeChart.data.labels.length > 20) {
+                        realtimeChart.data.labels.shift();
+                        realtimeChart.data.datasets[0].data.shift();
+                    }
+                } else {
+                    // Update the latest timeline slot sequentially in sub-minute resolutions
+                    realtimeChart.data.datasets[0].data[realtimeChart.data.datasets[0].data.length - 1] = data.speed;
                 }
                 realtimeChart.update('none');
             });
 
-            // UPGRADED: High frequency tracker. Checks location hardware every 1.5s
             watchId = navigator.geolocation.watchPosition(
                 streamPosition, 
-                err => console.error("GPS Error: ", err),
+                err => console.error("GPS Tracking Interrupted: ", err),
                 { 
                     enableHighAccuracy: true, 
                     maximumAge: 0,            
@@ -294,6 +321,7 @@
             document.getElementById('speedValue').innerText = "00.0";
             document.getElementById('accelValue').innerText = "0.00 m/s²";
             document.getElementById('gForceValue').innerText = "0.00 G";
+            document.getElementById('modeValue').innerText = "Awaiting Stream";
         }
     }
 
@@ -302,15 +330,11 @@
 
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
-        
-        // Pass absolute raw speed data straight to your dynamic threshold engine in Python
         let rawHardwareSpeed = (pos.coords.speed !== null && pos.coords.speed >= 0) ? pos.coords.speed : null;
 
         document.getElementById('geoCoords').innerText = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
 
         const currentLoc = [lat, lng];
-        
-        // UPGRADED: Replaced laggy map.panTo() with map.setView() to remove mobile canvas blocking
         map.setView(currentLoc, map.getZoom(), { animate: false });
         vehicleMarker.setLatLng(currentLoc);
         pathPolyline.addLatLng(currentLoc);
