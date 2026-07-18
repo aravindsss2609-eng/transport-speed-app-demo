@@ -8,7 +8,8 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'nexus-stream-telematics-2026'
 
 # Enforce strict WebSocket mode for low-latency delivery over cellular mobile towers
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet', websocket_ping_timeout=15, websocket_ping_interval=5)
+# Change async_mode to 'gevent' for compatibility
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent', websocket_ping_timeout=15, websocket_ping_interval=5)
 device_registry = {}
 
 def haversine_distance(lat1, lon1, lat2, lon2):
